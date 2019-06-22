@@ -14,6 +14,7 @@ import net.minecraft.block.IGrowable;
 import net.minecraft.client.Minecraft;
 import net.minecraft.init.Blocks;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.IIcon;
 import net.minecraft.util.Vec3;
 import net.minecraftforge.common.IPlantable;
@@ -27,8 +28,11 @@ public class TileEntitySprinkler extends TileEntityAgricraft {
     public float angle = 0.0F;
     private boolean isSprinkled = false;
     private boolean firstLoad = false;
-    private List<BlockToIrrigate> listOfBlocksToIrrigate = new ArrayList<BlockToIrrigate>();
     private boolean irrigatePlants = false;
+
+    private static int lastTick = 0;
+    private static int lastTickWorksDone = 0;
+    private static final int MAX_WORKS_PER_TICK = 150;
 
     //this saves the data on the tile entity
     @Override
@@ -73,28 +77,38 @@ public class TileEntitySprinkler extends TileEntityAgricraft {
     }
 
 
-    private void recalculateTargetBlocks(){
-        this.listOfBlocksToIrrigate.clear();
+    private void irrigateSurounding(){
+        if (lastTickWorksDone > MAX_WORKS_PER_TICK){  //It will irrigate again next tick
+            if (irrigatePlants){
+                this.counter = ConfigurationHandler.sprinklerGrowthIntervalTicks - 1;
+            }else {
+                this.counter--;
+            }
+            return;
+        }
+        lastTickWorksDone++;
+
         for (int yOffset = 1; yOffset < 6; yOffset++) {
             for (int xOffset = -3; xOffset <= 3; xOffset++) {
                 for (int zOffset = -3; zOffset <= 3; zOffset++) {
+
                     Block block = this.worldObj.getBlock(this.xCoord + xOffset, this.yCoord - yOffset, this.zCoord + zOffset);
-                    listOfBlocksToIrrigate.add(new BlockToIrrigate(this.xCoord + xOffset, this.yCoord - yOffset, this.zCoord + zOffset, block,yOffset>=5));
+                    BlockToIrrigate blockToIrrigate = new BlockToIrrigate(this.xCoord + xOffset, this.yCoord - yOffset, this.zCoord + zOffset, block,yOffset>=5);
+
+                    irrigate(blockToIrrigate);
                 }
             }
         }
     }
 
-    private void irrigateSurounding(){
-        for (BlockToIrrigate blockToIrrigate : listOfBlocksToIrrigate){
-            if (blockToIrrigate.block instanceof BlockFarmland && this.worldObj.getBlockMetadata(blockToIrrigate.x, blockToIrrigate.y, blockToIrrigate.z) < 6) {
-                int flag = 6; // Maximum water
-                this.worldObj.setBlockMetadataWithNotify(blockToIrrigate.x, blockToIrrigate.y, blockToIrrigate.z, 7, flag);
-            } else if (this.irrigatePlants && !blockToIrrigate.farmlandOnly &&((blockToIrrigate.block instanceof IPlantable) || (blockToIrrigate.block instanceof IGrowable))) {
-                // x chance to force growth tick on plant every y ticks
-                if (worldObj.rand.nextDouble() <= ConfigurationHandler.sprinklerGrowthChancePercent) {
-                    blockToIrrigate.block.updateTick(this.worldObj, blockToIrrigate.x, blockToIrrigate.y, blockToIrrigate.z, worldObj.rand);
-                }
+    private void irrigate(BlockToIrrigate blockToIrrigate){
+        if (blockToIrrigate.block instanceof BlockFarmland && this.worldObj.getBlockMetadata(blockToIrrigate.x, blockToIrrigate.y, blockToIrrigate.z) < 6) {
+            int flag = 6; // Maximum water
+            this.worldObj.setBlockMetadataWithNotify(blockToIrrigate.x, blockToIrrigate.y, blockToIrrigate.z, 7, flag);
+        } else if (this.irrigatePlants && !blockToIrrigate.farmlandOnly &&((blockToIrrigate.block instanceof IPlantable) || (blockToIrrigate.block instanceof IGrowable))) {
+            // x chance to force growth tick on plant every y ticks
+            if (worldObj.rand.nextDouble() <= ConfigurationHandler.sprinklerGrowthChancePercent) {
+                blockToIrrigate.block.updateTick(this.worldObj, blockToIrrigate.x, blockToIrrigate.y, blockToIrrigate.z, worldObj.rand);
             }
         }
     }
@@ -103,12 +117,18 @@ public class TileEntitySprinkler extends TileEntityAgricraft {
     public void updateEntity() {
         if (!worldObj.isRemote) {
             if (this.sprinkle()) {
+
                 counter++;
+
+                int currentTick = MinecraftServer.getServer().getTickCounter();
+                if (currentTick > lastTick){
+                    lastTick = currentTick;
+                    lastTickWorksDone = 0;
+                }
 
                 if (firstLoad == false){
                     firstLoad = true;
-                    recalculateTargetBlocks();
-                    irrigateSurounding(); //Irrigate BlockFarmland lands
+                    irrigateSurounding(); //Irrigate BlockFarmland
                     drainWaterFromChannel();
                     return;
                 }
@@ -121,7 +141,6 @@ public class TileEntitySprinkler extends TileEntityAgricraft {
                 }
 
                 if (irrigatePlants || counter % 200 == 0){ //Irrigate BlockFarmland lands every 200 ticks at least
-                    recalculateTargetBlocks();
                     irrigateSurounding();
                 }
                 drainWaterFromChannel();
@@ -148,29 +167,11 @@ public class TileEntitySprinkler extends TileEntityAgricraft {
         return this.isSprinkled;
     }
 
-    /** Depending on the block type either irrigates farmland or forces plant growth (based on chance) */
-    @Deprecated
-    private void irrigate(int x, int y, int z, boolean farmlandOnly) {
-        Block block = this.worldObj.getBlock(x, y, z);
-        if (block != null) {
-            if (block instanceof BlockFarmland && this.worldObj.getBlockMetadata(x, y, z) < 7) {
-                // irrigate farmland
-                int flag = counter==0?2:6;
-                this.worldObj.setBlockMetadataWithNotify(x, y, z, 7, flag);
-            } else if (((block instanceof IPlantable) || (block instanceof IGrowable)) && !farmlandOnly) {
-                // x chance to force growth tick on plant every y ticks
-                if (counter == 0 && worldObj.rand.nextDouble() <= ConfigurationHandler.sprinklerGrowthChancePercent) {
-                    block.updateTick(this.worldObj, x, y, z, worldObj.rand);
-                }
-            }
-        }
-    }
-
-    /** Called once per tick, drains water out of the WaterChannel one y-level above */
+    /** Called once per second, drains water out of the WaterChannel one y-level above */
     private void drainWaterFromChannel() {
         if (counter % 20 == 0) {
             TileEntityChannel channel = (TileEntityChannel) this.worldObj.getTileEntity(this.xCoord, this.yCoord + 1, this.zCoord);
-            channel.pullFluid(ConfigurationHandler.sprinklerRatePerHalfSecond);
+            channel.pullFluid(ConfigurationHandler.sprinklerRatePerSecond);
         }
     }
 
